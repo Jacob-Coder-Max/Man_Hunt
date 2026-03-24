@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Man Hunt Live</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body {font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin:0; padding:0; background:#090a0f; color:#f4f4f8;}
+    .app {width:100%; max-width:1000px; margin:0 auto; padding:1rem 0.75rem 1.5rem; min-height:100vh; box-sizing:border-box;}
+    h1 {margin-top:0; font-size:1.8rem; text-align:center; color:#f0f8ff; line-height:1.2;}
+    h2 {font-size:1.1rem; margin:0.6rem 0 0.5rem;}
+    .panel {background:#131621; border:1px solid #2e3447; border-radius:14px; padding:1rem; margin-bottom:1rem; box-shadow:0 4px 12px rgba(0,0,0,0.22);}
+    .field {margin:.75rem 0; display:flex; flex-direction:column; gap:0.35rem;}
+    label {font-size:0.95rem;}
+    input, select, button {width:100%; padding:.78rem; border:1px solid #444; border-radius:10px; background:#0f1525; color:#eef0f8; font-size:1rem;}
+    input:focus, select:focus, button:focus {outline:none; border-color:#6ca0ff; box-shadow:0 0 0 2px rgba(108,160,255,.2);}
+    button {cursor:pointer; font-weight:600; background:linear-gradient(145deg, #3754a0, #1b2c56); border:none; color:#fff;}
+    button:hover {filter:brightness(1.08);}
+    #map {width:100%; height:240px; border-radius:10px; margin-top:.75rem; background:#111; color:#5f7aa2; display:flex; align-items:center; justify-content:center; text-align:center; font-size:0.9rem; min-height:220px;}
+    .toast {padding:.8rem; border:1px solid; border-radius:8px; margin:.5rem 0; font-size:0.9rem;}
+    .toast.success {border-color:#2a8e4f; background:#0a2b16;}
+    .toast.warn {border-color:#c9a826; background:#2f2a13;}
+    #runnerList {display:flex; flex-direction:column; gap:0.4rem; font-size:0.95rem;}
+    #runnerList div {border:1px solid #334; border-radius:8px; padding:0.55rem; background:#0e1522;}
+    .small-btn {width:auto; align-self:flex-end; padding:.57rem .95rem; font-size:.9rem; margin-top:.45rem;}
+    #lobbyList {border:1px solid #334; border-radius:8px; padding:.5rem; max-height:160px; overflow:auto; background:#0b1020;}
+    #lobbyList div {padding:.4rem ; border-bottom:1px solid #223; cursor:pointer;}
+    #lobbyList div:last-child {border-bottom:none;}
+    #lobbyList div:hover {background:#1b2a43;}
+
+    @media (max-width: 720px) {
+      .app {padding:0.8rem;}
+      h1 {font-size:1.5rem;}
+      .panel {border-radius:12px; padding:0.9rem;}
+      input, select, button {font-size:0.96rem; padding:0.64rem;}
+      #map {height:200px; min-height:180px;}
+      .small-btn {align-self:stretch;}
+    }
+
+    @media (max-width: 480px) {
+      h1 {font-size:1.35rem;}
+      h2 {font-size:1rem;}
+      #map {height:180px; min-height:160px;}
+      .field {margin:0.65rem 0;}
+      .toast {font-size:0.86rem;}
+    }
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+</head>
+<body>
+<div class="app">
+  <h1>Man Hunt Live (PWA Prototype)</h1>
+  <div class="panel" id="setupPanel">
+    <h2>1) Lobby Setup</h2>
+    <div class="field"><label>Lobby (Game ID)
+      <input id="gameId" placeholder="huntsquad"></label>
+    </div>
+    <div class="field"><button id="createLobbyBtn" class="small-btn">Create/Refresh Lobby</button></div>
+    <div class="field"><button id="resetLobbyBtn" class="small-btn" style="background:#aa2f2f;">Reset/Clear All Lobbies</button></div>
+    <div class="field"><label>Choose lobby from list</label><div id="lobbyList"></div></div>
+
+    <h2>2) Player Setup</h2>
+    <div class="field"><label>Name<input id="playerName" placeholder="Your name"></label></div>
+    <div class="field"><label>Role
+      <select id="role"><option value="runner">Runner</option><option value="hunter">Hunter</option></select>
+    </label></div>
+    <button id="startBtn">Join Game</button>
+    <p style="font-size:.9rem; margin-top:.3rem;">Share the same Game ID with friends. Hunters can see runner positions every 5 minutes.</p>
+  </div>
+
+  <div class="panel" id="statusPanel" style="display:none;">
+    <h2>2) Game Status</h2>
+    <div class="field">Player: <strong id="uiName"></strong> &bull; Role: <strong id="uiRole"></strong> &bull; Game: <strong id="uiGame"></strong></div>
+    <div id="info"></div>
+
+    <h3>Live Runner Locations (for hunter)</h3>
+    <div id="runnerList"></div>
+    <h3>Challenges</h3>
+    <div id="challengePanel"></div>
+    <h3>Game map</h3>
+    <div id="map">Loading map...</div>
+    <button id="leaveBtn" style="margin-top:1rem;">Leave Game</button>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = 'manhunt.games';
+let map = null;
+let mapMarkers = [];
+let current = { name:'', role:'runner', game:'', active:false, intervalId:null, lastLocation:null };
+const locTimerMs = 5*60*1000;
+const setupPanel = document.getElementById('setupPanel');
+const statusPanel = document.getElementById('statusPanel');
+const info = document.getElementById('info');
+const runnerList = document.getElementById('runnerList');
+const challengePanel = document.getElementById('challengePanel');
+const uiName = document.getElementById('uiName');
+const uiRole = document.getElementById('uiRole');
+const uiGame = document.getElementById('uiGame');
+
+const showToast = (msg, type='success') => {
+  const div = document.createElement('div');
+  div.className = 'toast ' + (type === 'success' ? 'success' : 'warn');
+  div.innerText = msg;
+  info.prepend(div);
+  setTimeout(() => div.remove(), 5500);
+};
+
+const initMap = () => {
+  if (!window.L) {
+    document.getElementById('map').innerText = 'Map library not loaded. Check your internet connection.';
+    return;
+  }
+  if (map) return;
+
+  map = L.map('map', { zoomControl: false }).setView([38.0, -97.0], 4);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+};
+
+const clearMarkers = () => {
+  mapMarkers.forEach(marker => map.removeLayer(marker));
+  mapMarkers = [];
+};
+
+const updateMap = () => {
+  if (!map) {
+    initMap();
+    if (!map) return;
+  }
+  clearMarkers();
+
+  const addMarker = (pos, label, color) => {
+    const marker = L.circleMarker([pos.lat, pos.lng], {
+      radius: 9,
+      fillColor: color,
+      color: '#000',
+      weight: 1,
+      opacity: 1,
+      fillOpacity: 0.9
+    }).addTo(map);
+    marker.bindPopup(label).openPopup();
+    mapMarkers.push(marker);
+  };
+
+  if (current.role === 'hunter') {
+    const runners = getRunners();
+    if (runners.length === 0) {
+      map.setView([38.0, -97.0], 4);
+      return;
+    }
+    const bounds = [];
+    runners.forEach(r => {
+      if (!r.lastLocation) return;
+      const coords = { lat: r.lastLocation.lat, lng: r.lastLocation.lng };
+      addMarker(coords, r.name, '#f74444');
+      bounds.push([coords.lat, coords.lng]);
+    });
+    if (bounds.length > 0) {
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+  } else if (current.role === 'runner' && current.lastLocation) {
+    const coords = { lat: current.lastLocation.lat, lng: current.lastLocation.lng };
+    addMarker(coords, current.name, '#4bcf4b');
+    map.setView([coords.lat, coords.lng], 16);
+  }
+};
+
+const loadGames = () => {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
+  catch (e) { return {}; }
+};
+
+const saveGames = (games) => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(games));
+};
+
+const getGameList = () => {
+  const games = loadGames();
+  return Object.keys(games).sort();
+};
+
+const renderLobbyList = () => {
+  const lobbyList = document.getElementById('lobbyList');
+  lobbyList.innerHTML = '';
+  const gameNames = getGameList();
+  if (gameNames.length === 0) {
+    lobbyList.innerText = 'No lobbies yet. Create one!';
+    return;
+  }
+  gameNames.forEach(name => {
+    const row = document.createElement('div');
+    row.textContent = name;
+    row.addEventListener('click', () => {
+      document.getElementById('gameId').value = name;
+      showToast('Selected lobby: ' + name);
+    });
+    lobbyList.appendChild(row);
+  });
+};
+
+const cleanEmptyLobbies = (games) => {
+  let changed = false;
+  Object.keys(games).forEach(g => {
+    const game = games[g];
+    const alivePlayers = Object.values(game.players || {}).some(p => p.status === 'alive');
+    const hasChallenges = Array.isArray(game.challenges) && game.challenges.length > 0;
+    if (!alivePlayers && !hasChallenges) {
+      delete games[g];
+      changed = true;
+    }
+  });
+  if (changed) saveGames(games);
+};
+
+const ensureLobbyExists = (gameId) => {
+  const games = loadGames();
+  if (!games[gameId]) {
+    games[gameId] = { players: {}, challenges: [] };
+    saveGames(games);
+  }
+  cleanEmptyLobbies(games);
+  renderLobbyList();
+};
+
+const resetAllLobbies = () => {
+  localStorage.removeItem(STORAGE_KEY);
+  renderLobbyList();
+  if (current.active) {
+    current.active = false;
+    if (current.intervalId) clearInterval(current.intervalId);
+    statusPanel.style.display = 'none';
+    setupPanel.style.display = 'block';
+  }
+  showToast('All lobby data cleared.');
+};
+
+const saveCurrentPlayer = () => {
+  const games = loadGames();
+  games[current.game] = games[current.game] || { players: {}, challenges: [] };
+  games[current.game].players[current.name] = {
+    name: current.name,
+    role: current.role,
+    lastLocation: current.lastLocation,
+    updatedAt: Date.now(),
+    status: 'alive'
+  };
+  saveGames(games);
+};
+
+const getRunners = () => {
+  const games = loadGames();
+  const players = (games[current.game] && games[current.game].players) || {};
+  return Object.values(players).filter(p => p.role === 'runner' && p.status === 'alive');
+};
+
+const updateRunnerList = () => {
+  runnerList.innerHTML = '';
+  const runners = getRunners();
+  if (runners.length === 0) {
+    runnerList.innerText = 'No runners active in this game yet.';
+    return;
+  }
+  runners.forEach(d => {
+    if (!d.lastLocation) return;
+    const ageSec = Math.round((Date.now() - d.updatedAt) / 1000);
+    const item = document.createElement('div');
+    item.innerText = `${d.name}: ${d.lastLocation.lat.toFixed(4)}, ${d.lastLocation.lng.toFixed(4)} (updated ${ageSec}s ago)`;
+    runnerList.appendChild(item);
+  });
+};
+
+const getLocationAndSend = () => {
+  if (!current.active) return;
+  if (!navigator.geolocation) {
+    showToast('Geolocation unsupported', 'warn');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    current.lastLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude, ts: Date.now() };
+    saveCurrentPlayer();
+    updateRunnerList();
+    updateMap();
+    showToast('Location saved locally ' + current.lastLocation.lat.toFixed(4) + ', ' + current.lastLocation.lng.toFixed(4));
+  }, err => {
+    showToast('Location error: ' + err.message, 'warn');
+  }, { enableHighAccuracy: true, timeout: 20000 });
+};
+
+const makeChallenge = () => {
+  if (current.role !== 'runner') return;
+  const games = loadGames();
+  games[current.game] = games[current.game] || { players: {}, challenges: [] };
+  const challenge = {
+    id: 'challenge-' + Date.now(),
+    text: 'Take a selfie with a nearby landmark and upload the photo.',
+    type: 'photo',
+    status: 'pending',
+    createdAt: Date.now(),
+    assignedTo: current.name
+  };
+  games[current.game].challenges.push(challenge);
+  saveGames(games);
+  showToast('Challenge created locally: ' + challenge.text);
+};
+
+const createUploadField = () => {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'field';
+  wrapper.innerHTML = '<label>Upload proof photo <input type="file" accept="image/*" id="photoProof"></label>';
+  challengePanel.appendChild(wrapper);
+  document.getElementById('photoProof').addEventListener('change', ev => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    showToast('Photo selected locally; preview URL created.');
+    // Optional: keep proof in localStorage with blob URL, not persisted across reload.
+    console.log('photo proof local URL', url);
+  });
+};
+
+const mountGame = () => {
+  setupPanel.style.display = 'none';
+  statusPanel.style.display = 'block';
+  uiName.textContent = current.name;
+  uiRole.textContent = current.role;
+  uiGame.textContent = current.game;
+
+  current.active = true;
+  getLocationAndSend();
+  current.intervalId = setInterval(getLocationAndSend, locTimerMs);
+
+  if (current.role === 'runner') {
+    challengePanel.innerHTML = 'Runner tasks:<br>';
+    const btn = document.createElement('button');
+    btn.textContent = 'Request random challenge now';
+    btn.onclick = makeChallenge;
+    challengePanel.appendChild(btn);
+    createUploadField();
+    document.getElementById('map').textContent = 'Runner mode: your location is updating in this lobby.';
+  } else {
+    challengePanel.innerHTML = 'Hunter: watch runner location updates above.';
+    document.getElementById('map').textContent = 'Hunter mode: live runner map not available; location list updates automatically.';
+  }
+
+  updateRunnerList();
+  initMap();
+  updateMap();
+  setInterval(updateRunnerList, 5000);
+  setInterval(updateMap, 8000);
+
+  showToast('Joined game as ' + current.role + '. Location updates every 5 minutes locally.');
+};
+
+const startBtn = document.getElementById('startBtn');
+startBtn.addEventListener('click', () => {
+  const name = document.getElementById('playerName').value.trim();
+  const role = document.getElementById('role').value;
+  const game = document.getElementById('gameId').value.trim();
+  if (!game) { showToast('Enter a lobby/game ID first', 'warn'); return; }
+  if (!name) { showToast('Enter a name first', 'warn'); return; }
+  current.name = name;
+  current.role = role;
+  current.game = game;
+  ensureLobbyExists(game);
+  mountGame();
+});
+
+const createLobbyBtn = document.getElementById('createLobbyBtn');
+createLobbyBtn.addEventListener('click', () => {
+  const game = document.getElementById('gameId').value.trim();
+  if (!game) { showToast('Enter a lobby name', 'warn'); return; }
+  ensureLobbyExists(game);
+  showToast('Lobby created/updated: ' + game);
+});
+
+window.addEventListener('storage', (event) => {
+  if (event.key === STORAGE_KEY && current.active && current.role === 'hunter') {
+    updateRunnerList();
+    updateMap();
+  }
+});
+
+document.getElementById('resetLobbyBtn').addEventListener('click', resetAllLobbies);
+
+document.getElementById('leaveBtn').addEventListener('click', () => {
+  if (current.intervalId) clearInterval(current.intervalId);
+  const games = loadGames();
+  if (games[current.game] && games[current.game].players && games[current.game].players[current.name]) {
+    games[current.game].players[current.name].status = 'left';
+    games[current.game].players[current.name].leftAt = Date.now();
+    saveGames(games);
+    cleanEmptyLobbies(games);
+  }
+  current.active = false;
+  statusPanel.style.display = 'none';
+  setupPanel.style.display = 'block';
+  showToast('Left game.');
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderLobbyList();
+});
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
