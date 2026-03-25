@@ -89,7 +89,7 @@
 const STORAGE_KEY = 'manhunt.games';
 let map = null;
 let mapMarkers = [];
-let current = { name:'', role:'runner', game:'', active:false, intervalId:null, lastLocation:null };
+let current = { name:'', role:'runner', game:'', active:false, intervalId:null, runnerListInterval:null, mapInterval:null, lastLocation:null };
 const locTimerMs = 5*60*1000;
 const setupPanel = document.getElementById('setupPanel');
 const statusPanel = document.getElementById('statusPanel');
@@ -113,13 +113,17 @@ const initMap = () => {
     document.getElementById('map').innerText = 'Map library not loaded. Check your internet connection.';
     return;
   }
-  if (map) return;
+  if (map) {
+    map.invalidateSize();
+    return;
+  }
 
   map = L.map('map', { zoomControl: false }).setView([38.0, -97.0], 4);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
+  setTimeout(() => map.invalidateSize(), 250);
 };
 
 const clearMarkers = () => {
@@ -131,6 +135,8 @@ const updateMap = () => {
   if (!map) {
     initMap();
     if (!map) return;
+  } else {
+    map.invalidateSize();
   }
   clearMarkers();
 
@@ -203,7 +209,8 @@ const renderLobbyList = () => {
   });
 };
 
-const cleanEmptyLobbies = (games) => {
+const cleanEmptyLobbies = () => {
+  const games = loadGames();
   let changed = false;
   Object.keys(games).forEach(g => {
     const game = games[g];
@@ -214,16 +221,18 @@ const cleanEmptyLobbies = (games) => {
       changed = true;
     }
   });
-  if (changed) saveGames(games);
+  if (changed) {
+    saveGames(games);
+    renderLobbyList();
+  }
 };
 
 const ensureLobbyExists = (gameId) => {
   const games = loadGames();
   if (!games[gameId]) {
-    games[gameId] = { players: {}, challenges: [] };
+    games[gameId] = { players: {}, challenges: [], createdAt: Date.now() };
     saveGames(games);
   }
-  cleanEmptyLobbies(games);
   renderLobbyList();
 };
 
@@ -331,6 +340,16 @@ const mountGame = () => {
   uiGame.textContent = current.game;
 
   current.active = true;
+  if (current.intervalId) {
+    clearInterval(current.intervalId);
+  }
+  if (current.runnerListInterval) {
+    clearInterval(current.runnerListInterval);
+  }
+  if (current.mapInterval) {
+    clearInterval(current.mapInterval);
+  }
+
   getLocationAndSend();
   current.intervalId = setInterval(getLocationAndSend, locTimerMs);
 
@@ -350,8 +369,8 @@ const mountGame = () => {
   updateRunnerList();
   initMap();
   updateMap();
-  setInterval(updateRunnerList, 5000);
-  setInterval(updateMap, 8000);
+  current.runnerListInterval = setInterval(updateRunnerList, 5000);
+  current.mapInterval = setInterval(updateMap, 8000);
 
   showToast('Joined game as ' + current.role + '. Location updates every 5 minutes locally.');
 };
@@ -389,6 +408,8 @@ document.getElementById('resetLobbyBtn').addEventListener('click', resetAllLobbi
 
 document.getElementById('leaveBtn').addEventListener('click', () => {
   if (current.intervalId) clearInterval(current.intervalId);
+  if (current.runnerListInterval) clearInterval(current.runnerListInterval);
+  if (current.mapInterval) clearInterval(current.mapInterval);
   const games = loadGames();
   if (games[current.game] && games[current.game].players && games[current.game].players[current.name]) {
     games[current.game].players[current.name].status = 'left';
