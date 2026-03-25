@@ -81,6 +81,13 @@
     <div id="challengePanel"></div>
     <h3>Game map</h3>
     <div id="map">Loading map...</div>
+    <div style="margin-top:.75rem; display:flex; flex-wrap:wrap; gap:.5rem;">
+      <button id="startBoundaryBtn" class="small-btn" style="flex:1 1 210px;">Set boundary mode</button>
+      <button id="finishBoundaryBtn" class="small-btn" style="flex:1 1 210px;" disabled>Finish boundary</button>
+      <button id="clearBoundaryBtn" class="small-btn" style="flex:1 1 210px;">Clear boundary</button>
+      <button id="catchRunnerBtn" class="small-btn" style="flex:1 1 210px; background:#2a8e4f;">Catch nearest runner</button>
+    </div>
+    <div id="boundaryStatus" style="margin-top:.5rem; color:#a2b1c8; font-size:.88rem;">Boundary inactive</div>
     <button id="leaveBtn" style="margin-top:1rem;">Leave Game</button>
   </div>
 </div>
@@ -89,6 +96,10 @@
 const STORAGE_KEY = 'manhunt.games';
 let map = null;
 let mapMarkers = [];
+let boundaryMarkers = [];
+let boundaryPolygon = null;
+let boundaryPoints = [];
+let boundaryMode = false;
 let current = { name:'', role:'runner', game:'', active:false, intervalId:null, runnerListInterval:null, mapInterval:null, lastLocation:null };
 const locTimerMs = 5*60*1000;
 const setupPanel = document.getElementById('setupPanel');
@@ -123,12 +134,70 @@ const initMap = () => {
     maxZoom: 19,
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
+  map.on('click', onMapClick);
   setTimeout(() => map.invalidateSize(), 250);
 };
 
 const clearMarkers = () => {
   mapMarkers.forEach(marker => map.removeLayer(marker));
   mapMarkers = [];
+};
+
+const clearBoundary = () => {
+  boundaryMarkers.forEach(m => map.removeLayer(m));
+  boundaryMarkers = [];
+  if (boundaryPolygon) {
+    map.removeLayer(boundaryPolygon);
+    boundaryPolygon = null;
+  }
+  boundaryPoints = [];
+  boundaryMode = false;
+  document.getElementById('finishBoundaryBtn').disabled = true;
+  document.getElementById('boundaryStatus').innerText = 'Boundary inactive';
+};
+
+const drawBoundary = () => {
+  if (boundaryPolygon) {
+    map.removeLayer(boundaryPolygon);
+    boundaryPolygon = null;
+  }
+  if (boundaryPoints.length >= 3) {
+    boundaryPolygon = L.polygon(boundaryPoints, { color: '#ffaa00', fillOpacity: 0.1 }).addTo(map);
+  } else if (boundaryPoints.length >= 2) {
+    boundaryPolygon = L.polyline(boundaryPoints, { color: '#ffaa00' }).addTo(map);
+  }
+};
+
+const onMapClick = (e) => {
+  if (!boundaryMode) return;
+  const pt = [e.latlng.lat, e.latlng.lng];
+  boundaryPoints.push(pt);
+  const marker = L.circleMarker(pt, { radius: 6, color: '#ffb347', fillColor: '#ffb347', fillOpacity: 0.9 }).addTo(map);
+  boundaryMarkers.push(marker);
+  drawBoundary();
+  document.getElementById('boundaryStatus').innerText = `Boundary points: ${boundaryPoints.length}. Click finish when done.`;
+};
+
+const pointInsideBoundary = (point) => {
+  if (!boundaryPolygon || !boundaryPoints.length) return true;
+  if (boundaryPolygon && boundaryPolygon.getBounds) {
+    // simple within bounds check (approx)
+    return boundaryPolygon.getBounds().contains([point.lat, point.lng]);
+  }
+  return true;
+};
+
+const getDistanceMeters = (a, b) => {
+  const R = 6371000;
+  const dLat = (b.lat - a.lat) * (Math.PI / 180);
+  const dLng = (b.lng - a.lng) * (Math.PI / 180);
+  const lat1 = a.lat * (Math.PI / 180);
+  const lat2 = b.lat * (Math.PI / 180);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const aa = sinDLat * sinDLat + sinDLng * sinDLng * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+  return R * c;
 };
 
 const updateMap = () => {
@@ -294,6 +363,7 @@ const getLocationAndSend = () => {
     saveCurrentPlayer();
     updateRunnerList();
     updateMap();
+    checkRunnerBoundary();
     showToast('Location saved locally ' + current.lastLocation.lat.toFixed(4) + ', ' + current.lastLocation.lng.toFixed(4));
   }, err => {
     showToast('Location error: ' + err.message, 'warn');
@@ -316,6 +386,56 @@ const makeChallenge = () => {
   saveGames(games);
   showToast('Challenge created locally: ' + challenge.text);
 };
+
+const attemptCatchRunner = () => {
+  if (!current.active || current.role !== 'hunter') {
+    showToast('Only hunter can catch running players', 'warn');
+    return;
+  }
+  if (!current.lastLocation) {
+    showToast('Hunter position not available yet', 'warn');
+    return;
+  }
+  const runners = getRunners().filter(r => r.lastLocation);
+  if (runners.length === 0) {
+    showToast('No runners to catch', 'warn');
+    return;
+  }
+
+  let nearest = null;
+  let nearestDist = Infinity;
+  runners.forEach(r => {
+    const dist = getDistanceMeters(current.lastLocation, r.lastLocation);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = r;
+    }
+  });
+
+  if (nearest && nearestDist <= 60) {
+    const games = loadGames();
+    const player = games[current.game]?.players?.[nearest.name];
+    if (player) {
+      player.status = 'caught';
+      player.caughtAt = Date.now();
+      saveGames(games);
+      updateRunnerList();
+      updateMap();
+      showToast(`Caught ${nearest.name}! distance ${Math.round(nearestDist)}m`);
+      return;
+    }
+  }
+  showToast(nearest ? `Runner too far (${Math.round(nearestDist)}m). Move closer.` : 'No valid runner found', 'warn');
+};
+
+const checkRunnerBoundary = () => {
+  if (current.role !== 'runner' || !current.lastLocation) return;
+  if (!boundaryPolygon) return;
+  if (!pointInsideBoundary(current.lastLocation)) {
+    showToast('Warning: You are outside the set boundary!', 'warn');
+  }
+};
+
 
 const createUploadField = () => {
   const wrapper = document.createElement('div');
@@ -395,6 +515,36 @@ createLobbyBtn.addEventListener('click', () => {
   if (!game) { showToast('Enter a lobby name', 'warn'); return; }
   ensureLobbyExists(game);
   showToast('Lobby created/updated: ' + game);
+});
+
+document.getElementById('startBoundaryBtn').addEventListener('click', () => {
+  if (!map) { showToast('Map not initialized yet', 'warn'); return; }
+  boundaryMode = true;
+  boundaryPoints = [];
+  clearBoundary();
+  boundaryMode = true;
+  document.getElementById('boundaryStatus').innerText = 'Boundary drawing: click map to add points';
+  document.getElementById('finishBoundaryBtn').disabled = false;
+});
+
+document.getElementById('finishBoundaryBtn').addEventListener('click', () => {
+  if (!boundaryMode || boundaryPoints.length < 3) {
+    showToast('Need at least 3 points to finish boundary', 'warn');
+    return;
+  }
+  boundaryMode = false;
+  drawBoundary();
+  document.getElementById('boundaryStatus').innerText = `Boundary set (${boundaryPoints.length} points).`;
+  document.getElementById('finishBoundaryBtn').disabled = true;
+});
+
+document.getElementById('clearBoundaryBtn').addEventListener('click', () => {
+  clearBoundary();
+  showToast('Boundary cleared.');
+});
+
+document.getElementById('catchRunnerBtn').addEventListener('click', () => {
+  attemptCatchRunner();
 });
 
 window.addEventListener('storage', (event) => {
