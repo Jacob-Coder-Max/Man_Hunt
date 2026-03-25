@@ -58,6 +58,7 @@
       <input id="gameId" placeholder="huntsquad"></label>
     </div>
     <div class="field"><button id="createLobbyBtn" class="small-btn">Create/Refresh Lobby</button></div>
+    <div class="field"><button id="shareLobbyBtn" class="small-btn">Copy lobby share link</button></div>
     <div class="field"><button id="resetLobbyBtn" class="small-btn" style="background:#aa2f2f;">Reset/Clear All Lobbies</button></div>
     <div class="field"><label>Choose lobby from list</label><div id="lobbyList"></div></div>
 
@@ -517,6 +518,18 @@ createLobbyBtn.addEventListener('click', () => {
   showToast('Lobby created/updated: ' + game);
 });
 
+const shareLobbyBtn = document.getElementById('shareLobbyBtn');
+shareLobbyBtn.addEventListener('click', () => {
+  const game = document.getElementById('gameId').value.trim();
+  if (!game) { showToast('Enter a lobby name first', 'warn'); return; }
+  const shareUrl = `${window.location.origin}${window.location.pathname}?lobby=${encodeURIComponent(game)}`;
+  navigator.clipboard.writeText(shareUrl).then(() => {
+    showToast('Lobby link copied! Paste on another device');
+  }).catch(() => {
+    showToast('Could not copy; please copy manually: ' + shareUrl, 'warn');
+  });
+});
+
 document.getElementById('startBoundaryBtn').addEventListener('click', () => {
   if (!map) { showToast('Map not initialized yet', 'warn'); return; }
   boundaryMode = true;
@@ -573,8 +586,22 @@ document.getElementById('leaveBtn').addEventListener('click', () => {
   showToast('Left game.');
 });
 
+const syncLobbyFromUrl = () => {
+  const params = new URLSearchParams(window.location.search);
+  const lobby = params.get('lobby');
+  if (lobby) {
+    const gameIdInput = document.getElementById('gameId');
+    gameIdInput.value = lobby;
+    ensureLobbyExists(lobby);
+    showToast('Lobby loaded from link: ' + lobby);
+    return lobby;
+  }
+  return null;
+};
+
 document.addEventListener('DOMContentLoaded', () => {
   renderLobbyList();
+  syncLobbyFromUrl();
 });
 
 if ('serviceWorker' in navigator) {
